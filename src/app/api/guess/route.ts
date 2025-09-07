@@ -1,13 +1,11 @@
+// src/app/api/guess/route.ts
 import { NextRequest, NextResponse } from 'next/server';
-import { z } from 'zod';
 import { createClient } from '@supabase/supabase-js';
 import { msSinceLocalMidnight } from '@/lib/time';
 import { cookies } from 'next/headers';
 import crypto from 'crypto';
 
 export const runtime = 'nodejs';
-
-const Body = z.object({ idx: z.number(), guess: z.string().min(1), tz: z.string() });
 
 function sbAdmin() {
   return createClient(
@@ -17,13 +15,7 @@ function sbAdmin() {
   );
 }
 
-function jsonWithCookies(payload: any, cookieResponse: NextResponse | null) {
-  return cookieResponse
-    ? new NextResponse(JSON.stringify(payload), { headers: cookieResponse.headers })
-    : NextResponse.json(payload);
-}
-
-function ensureAnon(): { anon: string; cookieResponse: NextResponse | null } {
+function ensureAnonCookie() {
   const jar = cookies();
   let anon = jar.get('anon_id')?.value;
   if (!anon) {
@@ -32,31 +24,42 @@ function ensureAnon(): { anon: string; cookieResponse: NextResponse | null } {
     res.cookies.set('anon_id', anon, {
       httpOnly: true,
       sameSite: 'lax',
-      secure: true,
+      secure: process.env.NODE_ENV === 'production' ? true : false,
       maxAge: 60 * 60 * 24 * 365,
       path: '/',
     });
     return { anon, cookieResponse: res };
   }
-  return { anon, cookieResponse: null };
+  return { anon, cookieResponse: null as NextResponse | null };
+}
+
+function respond(payload: any, cookieResponse: NextResponse | null, status = 200) {
+  return cookieResponse
+    ? new NextResponse(JSON.stringify(payload), { status, headers: cookieResponse.headers })
+    : NextResponse.json(payload, { status });
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const body = Body.parse(await req.json());
-    const { anon, cookieResponse } = ensureAnon();
-    const sb = sbAdmin();
-
-    const { data: secret, error: se } = await sb
-      .from('puzzles_secret')
-      .select('target_word,word_hint')
-      .eq('idx', body.idx)
-      .single();
-
-    if (se || !secret) {
-      return jsonWithCookies({ error: 'Not found' }, cookieResponse);
+    const body = await req.json().catch(() => null) as { idx?: number; guess?: string; tz?: string } | null;
+    if (!body || typeof body.idx !== 'number' || !body.guess || typeof body.tz !== 'string') {
+      return NextResponse.json({ error: 'bad request' }, { status: 400 });
     }
 
+    const { anon, cookieResponse } = ensureAnonCookie();
+    const sb = sbAdmin();
+
+    // read secret
+    const { data: secret, error: se } = await sb
+      .from('puzzles_secret')
+      .select('target_word')
+      .eq('idx', body.idx)
+      .single();
+    if (se || !secret) return respond({ error: 'Not found' }, cookieResponse, 404);
+
+    const target = String(secret.target_word).toLowerCase();
+
+    // fetch/create submission
     let { data: sub } = await sb
       .from('submissions')
       .select('*')
@@ -78,13 +81,17 @@ export async function POST(req: NextRequest) {
         })
         .select('*')
         .single();
-      sub = ins.data!;
+      if (ins.error || !ins.data) {
+        return respond({ error: ins.error?.message || 'create submission failed' }, cookieResponse, 500);
+      }
+      sub = ins.data;
     }
 
+    // already solved
     if (sub.solved) {
-      return jsonWithCookies(
+      return respond(
         {
-          alreadySolved: true,
+          alreadySolved: true as const,
           lives_left: sub.lives_left,
           points: sub.points,
           guesses: Array.isArray(sub.guesses) ? (sub.guesses as string[]) : [],
@@ -94,10 +101,10 @@ export async function POST(req: NextRequest) {
     }
 
     const guess = body.guess.trim().toLowerCase();
-    const correct = guess === secret.target_word.toLowerCase();
     const prevGuesses: string[] = Array.isArray(sub.guesses) ? sub.guesses : [];
 
-    if (correct) {
+    // correct -> solve
+    if (guess === target) {
       const points = sub.lives_left;
       const upd = await sb
         .from('submissions')
@@ -116,9 +123,9 @@ export async function POST(req: NextRequest) {
         upd.data ??
         (await sb.from('submissions').select('lives_left,points,guesses').eq('id', sub.id).single()).data!;
 
-      return jsonWithCookies(
+      return respond(
         {
-          correct: true,
+          correct: true as const,
           lives_left: curr.lives_left,
           points: curr.points,
           guesses: Array.isArray(curr.guesses) ? (curr.guesses as string[]) : prevGuesses,
@@ -127,24 +134,21 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // duplicate guess anywhere in history -> no decrement
+    // duplicate wrong -> no decrement
     if (prevGuesses.includes(guess)) {
-      const ll = sub.lives_left;
-      return jsonWithCookies(
+      return respond(
         {
-          correct: false,
+          correct: false as const,
           duplicate: true,
-          lives_left: ll,
-          ...(ll <= 2 ? { firstLetter: secret.target_word[0] } : {}),
-          ...(ll <= 1 ? { wordHint: secret.word_hint } : {}),
-          gameOver: ll === 0,
+          lives_left: sub.lives_left,
+          gameOver: sub.lives_left === 0,
           guesses: prevGuesses,
         },
         cookieResponse
       );
     }
 
-    // new wrong guess -> decrement with optimistic lock
+    // new wrong -> decrement with optimistic lock
     const targetLives = Math.max(0, sub.lives_left - 1);
     const upd = await sb
       .from('submissions')
@@ -161,15 +165,13 @@ export async function POST(req: NextRequest) {
       upd.data ??
       (await sb.from('submissions').select('lives_left,guesses').eq('id', sub.id).single()).data!;
 
-    const lives_left = curr.lives_left;
-    const guesses = Array.isArray(curr.guesses) ? (curr.guesses as string[]) : [...prevGuesses, guess];
-
-    const reveal: Record<string, string | undefined> = {};
-    if (lives_left === 2) reveal.firstLetter = secret.target_word[0];
-    if (lives_left === 1) reveal.wordHint = secret.word_hint;
-
-    return jsonWithCookies(
-      { correct: false, lives_left, ...reveal, gameOver: lives_left === 0, guesses },
+    return respond(
+      {
+        correct: false as const,
+        lives_left: curr.lives_left,
+        gameOver: curr.lives_left === 0,
+        guesses: Array.isArray(curr.guesses) ? (curr.guesses as string[]) : [...prevGuesses, guess],
+      },
       cookieResponse
     );
   } catch (e: any) {
