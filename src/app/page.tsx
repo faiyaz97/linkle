@@ -6,6 +6,7 @@ import Hearts from '@/components/Hearts';
 import ClueTile from '@/components/ClueTile';
 import AnswerTile from '@/components/AnswerTile';
 import Footer from '@/components/Footer';
+import Keyboard, { KeyState } from '@/components/Keyboard';
 
 type Today = {
   idx: number;
@@ -40,7 +41,6 @@ export default function Home() {
         const data: Today = await r.json();
         if (cancelled) return;
         setToday(data);
-
         if (data.submission) {
           setLives(data.submission.lives_left ?? 3);
           const all = Array.isArray(data.submission.guesses) ? data.submission.guesses : [];
@@ -67,8 +67,7 @@ export default function Home() {
     return guesses.includes(norm);
   }
 
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function submitGuess() {
     if (!today || status !== 'playing' || !guess.trim() || submitting || submitLock.current) return;
 
     const normGuess = guess.trim().toLowerCase();
@@ -117,7 +116,6 @@ export default function Home() {
         setLives(res.lives_left);
         if (Array.isArray(res.guesses)) setWrongGuesses(res.guesses);
         else setWrongGuesses((prev) => [...prev, normGuess]);
-
         setMissPulse(true);
         setShake(true);
         setTimeout(() => setMissPulse(false), 220);
@@ -132,60 +130,72 @@ export default function Home() {
     }
   }
 
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    submitGuess();
+  }
+
+  const keyStates: Partial<Record<string, KeyState>> = {};
+  for (const w of wrongGuesses) for (const ch of w.toUpperCase()) if (/[A-Z]/.test(ch)) keyStates[ch] = keyStates[ch] ?? 'miss';
+  if (status === 'won' && guesses.length > 0) for (const ch of guesses[guesses.length - 1].toUpperCase()) if (/[A-Z]/.test(ch)) keyStates[ch] = 'correct';
+
   return (
     <div className="min-h-screen flex flex-col">
       <NavBar />
 
-      <main className="flex-grow flex flex-col items-center">
-        <div className="max-w-md w-full p-4">
-          {Array.isArray(today?.clues) && today!.clues.length > 0 ? (
-            <div className="mt-2 space-y-3">
-              {today!.clues.map((c, i) => (
-                <ClueTile key={i} text={c} />
-              ))}
-            </div>
-          ) : (
-            <p className="mt-4 text-sm text-red-600">No clues available for today.</p>
-          )}
-
-          <form className={`mt-6 ${shake ? 'animate-shake' : ''}`} onSubmit={onSubmit}>
-            <div className="flex gap-3 items-end">
-              <div className="flex-1">
-                <AnswerTile
-                  value={guess}
-                  onChange={setGuess}
-                  disabled={submitting || status !== 'playing'}
-                  placeholder="ANSWER"
-                />
+      {/* full-width, vertically centered */}
+      <main className="w-full flex-1 flex items-center">
+        <div className="w-full">
+          {/* section 1 */}
+          <section className="mx-auto w-full max-w-md px-4">
+            {/* top row: bottom-aligned, no bottom spacing */}
+            <div className="flex h-8 md:h-9 items-end justify-between mb-0 pb-0">
+              <div className="flex flex-wrap gap-x-1 leading-none mb-0 pb-0">
+                {wrongGuesses.map((g, i) => (
+                  <span key={i} className="text-red-600 font-bold text-sm leading-none">
+                    {g.toUpperCase()}
+                  </span>
+                ))}
               </div>
-
-              <div className="h-[80px] flex flex-col items-stretch justify-between">
-                <div className="pointer-events-none">
-                  <Hearts lives={lives} pulse={missPulse} />
-                </div>
-                <button
-                  type="submit"
-                  className="h-[40px] w-full rounded-md bg-black text-white hover:brightness-95 active:brightness-90 font-bold disabled:opacity-60"
-                  disabled={submitting || status !== 'playing' || !guess.trim()}
-                  aria-label="Submit guess"
-                >
-                  GUESS
-                </button>
+              <div className="shrink-0 flex items-end leading-none mb-0 pb-0">
+                <Hearts lives={lives} pulse={missPulse} />
               </div>
             </div>
-          </form>
 
-          <div className="mt-1">
-            {wrongGuesses.map((g, i) => (
-              <span key={i} className="text-red-600 font-bold tracking-wide pr-2">
-                {g.toUpperCase()}
-              </span>
-            ))}
-          </div>
+            {/* clues */}
+            {Array.isArray(today?.clues) && today!.clues.length > 0 ? (
+              <div className="space-y-2 mt-1">
+                {today!.clues.map((c, i) => <ClueTile key={i} text={c} />)}
+              </div>
+            ) : (
+              <p className="mt-4 text-sm text-red-600">No clues available for today.</p>
+            )}
+
+            {/* answer input */}
+            <form className={`mt-2 ${shake ? 'animate-shake' : ''}`} onSubmit={onSubmit}>
+              <AnswerTile
+                value={guess}
+                onChange={setGuess}
+                disabled={submitting || status !== 'playing'}
+                placeholder="ANSWER"
+              />
+              <button type="submit" className="sr-only">Submit</button>
+            </form>
+          </section>
+
+          {/* section 2: keyboard */}
+          <section className="mx-auto w-full max-w-xl px-4">
+            <Keyboard
+              className="mt-4"
+              states={keyStates}
+              onKey={(ch) => setGuess((v) => v + ch)}
+              onBackspace={() => setGuess((v) => v.slice(0, -1))}
+              onEnter={() => submitGuess()}
+            />
+          </section>
         </div>
       </main>
 
-      {/* Centered footer wrapper kept */}
       <div className="w-full flex justify-center">
         <Footer idx={today?.idx} localDate={today?.local_date} tz={tz} />
       </div>
