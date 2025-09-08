@@ -1,7 +1,5 @@
-// src/app/api/guess/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { msSinceLocalMidnight } from '@/lib/time';
 import { cookies } from 'next/headers';
 import crypto from 'crypto';
 
@@ -24,7 +22,7 @@ function ensureAnonCookie() {
     res.cookies.set('anon_id', anon, {
       httpOnly: true,
       sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production' ? true : false,
+      secure: true,
       maxAge: 60 * 60 * 24 * 365,
       path: '/',
     });
@@ -33,147 +31,176 @@ function ensureAnonCookie() {
   return { anon, cookieResponse: null as NextResponse | null };
 }
 
-function respond(payload: any, cookieResponse: NextResponse | null, status = 200) {
-  return cookieResponse
-    ? new NextResponse(JSON.stringify(payload), { status, headers: cookieResponse.headers })
-    : NextResponse.json(payload, { status });
-}
-
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json().catch(() => null) as { idx?: number; guess?: string; tz?: string } | null;
-    if (!body || typeof body.idx !== 'number' || !body.guess || typeof body.tz !== 'string') {
-      return NextResponse.json({ error: 'bad request' }, { status: 400 });
+    const { idx, guess } = await req.json();
+    if (!Number.isInteger(idx) || !guess || typeof guess !== 'string') {
+      return NextResponse.json({ error: 'Bad request' }, { status: 400 });
     }
 
     const { anon, cookieResponse } = ensureAnonCookie();
     const sb = sbAdmin();
 
-    // read secret
-    const { data: secret, error: se } = await sb
+    // Fetch target word
+    const { data: sec, error: secErr } = await sb
       .from('puzzles_secret')
       .select('target_word')
-      .eq('idx', body.idx)
+      .eq('idx', idx)
       .single();
-    if (se || !secret) return respond({ error: 'Not found' }, cookieResponse, 404);
 
-    const target = String(secret.target_word).toLowerCase();
+    if (secErr || !sec?.target_word) {
+      const payload = { error: secErr?.message ?? 'Puzzle not found' };
+      return cookieResponse
+        ? new NextResponse(JSON.stringify(payload), { status: 404, headers: cookieResponse.headers })
+        : NextResponse.json(payload, { status: 404 });
+    }
 
-    // fetch/create submission
-    let { data: sub } = await sb
+    const target = String(sec.target_word).trim().toLowerCase();
+    const normGuess = String(guess).trim().toLowerCase();
+    const START_LIVES = 3;
+
+    // Read existing submission
+    const { data: sub } = await sb
       .from('submissions')
-      .select('*')
-      .eq('puzzle_idx', body.idx)
+      .select('id, lives_left, solved, points, guesses')
+      .eq('puzzle_idx', idx)
       .eq('anon_id', anon)
-      .limit(1)
       .maybeSingle();
 
-    if (!sub) {
-      const tiebreak = msSinceLocalMidnight(body.tz);
-      const ins = await sb
-        .from('submissions')
-        .insert({
-          anon_id: anon,
-          puzzle_idx: body.idx,
-          lives_left: 3,
-          guesses: [],
-          tiebreak_ms: tiebreak,
-        })
-        .select('*')
-        .single();
-      if (ins.error || !ins.data) {
-        return respond({ error: ins.error?.message || 'create submission failed' }, cookieResponse, 500);
-      }
-      sub = ins.data;
+    const existingGuesses: string[] = Array.isArray(sub?.guesses) ? (sub!.guesses as string[]) : [];
+    const livesLeft = typeof sub?.lives_left === 'number' ? sub!.lives_left : START_LIVES;
+
+    // Already finished?
+    if (sub?.solved) {
+      const payload = {
+        alreadySolved: true as const,
+        lives_left: livesLeft,
+        points: sub.points ?? livesLeft,
+        guesses: existingGuesses,
+      };
+      return cookieResponse
+        ? new NextResponse(JSON.stringify(payload), { headers: cookieResponse.headers })
+        : NextResponse.json(payload);
     }
-
-    // already solved
-    if (sub.solved) {
-      return respond(
-        {
-          alreadySolved: true as const,
-          lives_left: sub.lives_left,
-          points: sub.points,
-          guesses: Array.isArray(sub.guesses) ? (sub.guesses as string[]) : [],
-        },
-        cookieResponse
-      );
-    }
-
-    const guess = body.guess.trim().toLowerCase();
-    const prevGuesses: string[] = Array.isArray(sub.guesses) ? sub.guesses : [];
-
-    // correct -> solve
-    if (guess === target) {
-      const points = sub.lives_left;
-      const upd = await sb
-        .from('submissions')
-        .update({
-          solved: true,
-          solved_at: new Date().toISOString(),
-          points,
-          guesses: prevGuesses.includes(guess) ? prevGuesses : [...prevGuesses, guess],
-        })
-        .eq('id', sub.id)
-        .eq('solved', false)
-        .select('lives_left,points,guesses')
-        .maybeSingle();
-
-      const curr =
-        upd.data ??
-        (await sb.from('submissions').select('lives_left,points,guesses').eq('id', sub.id).single()).data!;
-
-      return respond(
-        {
-          correct: true as const,
-          lives_left: curr.lives_left,
-          points: curr.points,
-          guesses: Array.isArray(curr.guesses) ? (curr.guesses as string[]) : prevGuesses,
-        },
-        cookieResponse
-      );
-    }
-
-    // duplicate wrong -> no decrement
-    if (prevGuesses.includes(guess)) {
-      return respond(
-        {
-          correct: false as const,
-          duplicate: true,
-          lives_left: sub.lives_left,
-          gameOver: sub.lives_left === 0,
-          guesses: prevGuesses,
-        },
-        cookieResponse
-      );
-    }
-
-    // new wrong -> decrement with optimistic lock
-    const targetLives = Math.max(0, sub.lives_left - 1);
-    const upd = await sb
-      .from('submissions')
-      .update({
-        lives_left: targetLives,
-        guesses: [...prevGuesses, guess],
-      })
-      .eq('id', sub.id)
-      .eq('lives_left', sub.lives_left)
-      .select('lives_left,guesses')
-      .maybeSingle();
-
-    const curr =
-      upd.data ??
-      (await sb.from('submissions').select('lives_left,guesses').eq('id', sub.id).single()).data!;
-
-    return respond(
-      {
+    if (sub && livesLeft === 0) {
+      const payload = {
         correct: false as const,
-        lives_left: curr.lives_left,
-        gameOver: curr.lives_left === 0,
-        guesses: Array.isArray(curr.guesses) ? (curr.guesses as string[]) : [...prevGuesses, guess],
-      },
-      cookieResponse
-    );
+        lives_left: 0,
+        gameOver: true,
+        guesses: existingGuesses,
+        answer: target, // IMPORTANT: reveal on loss
+      };
+      return cookieResponse
+        ? new NextResponse(JSON.stringify(payload), { headers: cookieResponse.headers })
+        : NextResponse.json(payload);
+    }
+
+    // Duplicate guess?
+    if (existingGuesses.includes(normGuess)) {
+      const payload = {
+        correct: false as const,
+        lives_left: livesLeft,
+        gameOver: false,
+        guesses: existingGuesses,
+        duplicate: true,
+      };
+      return cookieResponse
+        ? new NextResponse(JSON.stringify(payload), { headers: cookieResponse.headers })
+        : NextResponse.json(payload);
+    }
+
+    // Process guess
+    if (normGuess === target) {
+      const newGuesses = [...existingGuesses, normGuess];
+      const points = livesLeft;
+
+      let upd;
+      if (sub?.id) {
+        const { data } = await sb
+          .from('submissions')
+          .update({
+            guesses: newGuesses,
+            solved: true,
+            points,
+            solved_at: new Date().toISOString(),
+          })
+          .eq('id', sub.id)
+          .select('lives_left, points, guesses')
+          .single();
+        upd = data;
+      } else {
+        const { data } = await sb
+          .from('submissions')
+          .insert({
+            anon_id: anon,
+            puzzle_idx: idx,
+            guesses: newGuesses,
+            lives_left: START_LIVES,
+            solved: true,
+            points,
+            solved_at: new Date().toISOString(),
+          })
+          .select('lives_left, points, guesses')
+          .single();
+        upd = data;
+      }
+
+      const payload = {
+        correct: true as const,
+        lives_left: upd?.lives_left ?? livesLeft,
+        points: upd?.points ?? points,
+        guesses: (upd?.guesses as string[]) ?? newGuesses,
+      };
+      return cookieResponse
+        ? new NextResponse(JSON.stringify(payload), { headers: cookieResponse.headers })
+        : NextResponse.json(payload);
+    } else {
+      // Wrong guess: decrement life
+      const nextLives = Math.max(0, livesLeft - 1);
+      const newGuesses = [...existingGuesses, normGuess];
+
+      let upd;
+      if (sub?.id) {
+        const { data } = await sb
+          .from('submissions')
+          .update({
+            guesses: newGuesses,
+            lives_left: nextLives,
+            solved: false,
+          })
+          .eq('id', sub.id)
+          .select('lives_left, guesses')
+          .single();
+        upd = data;
+      } else {
+        const { data } = await sb
+          .from('submissions')
+          .insert({
+            anon_id: anon,
+            puzzle_idx: idx,
+            guesses: newGuesses,
+            lives_left: nextLives,
+            solved: false,
+            points: 0,
+          })
+          .select('lives_left, guesses')
+          .single();
+        upd = data;
+      }
+
+      const gameOver = (upd?.lives_left ?? nextLives) === 0;
+      const payload = {
+        correct: false as const,
+        lives_left: upd?.lives_left ?? nextLives,
+        gameOver,
+        guesses: (upd?.guesses as string[]) ?? newGuesses,
+        ...(gameOver ? { answer: target } : {}), // reveal on loss
+      };
+
+      return cookieResponse
+        ? new NextResponse(JSON.stringify(payload), { headers: cookieResponse.headers })
+        : NextResponse.json(payload);
+    }
   } catch (e: any) {
     return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
   }

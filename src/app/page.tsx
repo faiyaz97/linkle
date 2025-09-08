@@ -1,4 +1,3 @@
-// src/app/page.tsx
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import NavBar from '@/components/NavBar';
@@ -14,11 +13,12 @@ type Today = {
   local_date: string;
   clues: string[];
   submission: null | { lives_left: number; solved: boolean; points: number; guesses: string[] };
+  answer?: string; // NEW
 };
 type GuessResp =
   | { alreadySolved: true; lives_left: number; points: number; guesses?: string[] }
   | { correct: true; lives_left: number; points: number; guesses?: string[] }
-  | { correct: false; lives_left: number; gameOver: boolean; guesses?: string[]; duplicate?: boolean };
+  | { correct: false; lives_left: number; gameOver: boolean; guesses?: string[]; duplicate?: boolean; answer?: string };
 
 export default function Home() {
   const [tz] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone);
@@ -28,6 +28,7 @@ export default function Home() {
   const [guesses, setGuesses] = useState<string[]>([]);
   const [wrongGuesses, setWrongGuesses] = useState<string[]>([]);
   const [guess, setGuess] = useState<string>('');
+  const [reveal, setReveal] = useState<string>(''); // final shown word
   const [submitting, setSubmitting] = useState(false);
   const [missPulse, setMissPulse] = useState(false);
   const [shake, setShake] = useState(false);
@@ -42,19 +43,39 @@ export default function Home() {
         const data: Today = await r.json();
         if (cancelled) return;
         setToday(data);
+
         if (data.submission) {
           setLives(data.submission.lives_left ?? 3);
           const all = Array.isArray(data.submission.guesses) ? data.submission.guesses : [];
           setGuesses(all);
           setWrongGuesses(data.submission.solved ? all.slice(0, -1) : all);
-          if (data.submission.solved) setStatus('won');
-          else if (data.submission.lives_left === 0) setStatus('lost');
-          else setStatus('playing');
+
+          if (data.submission.solved) {
+            setStatus('won');
+            const ans = data.answer || all.at(-1) || '';
+            setReveal(ans);
+            setGuess(ans);
+          } else if (data.submission.lives_left === 0) {
+            setStatus('lost');
+            if (data.answer) {
+              setReveal(data.answer);
+              setGuess(data.answer);
+            } else {
+              setReveal(''); // backend didn’t return; will show placeholder until answered elsewhere
+              setGuess('');
+            }
+          } else {
+            setStatus('playing');
+            setGuess('');
+            setReveal('');
+          }
         } else {
           setLives(3);
           setGuesses([]);
           setWrongGuesses([]);
           setStatus('playing');
+          setGuess('');
+          setReveal('');
         }
       } catch {
         if (!cancelled) setToday(undefined);
@@ -67,8 +88,7 @@ export default function Home() {
     if (!today || status !== 'playing' || !guess.trim() || submitting || submitLock.current) return;
 
     const normGuess = guess.trim().toLowerCase();
-    const isDup = guesses.includes(normGuess);
-    if (isDup) {
+    if (guesses.includes(normGuess)) {
       setShake(true);
       setTimeout(() => setShake(false), 320);
       setGuess('');
@@ -90,16 +110,18 @@ export default function Home() {
       if ('alreadySolved' in res) {
         setStatus('won');
         setLives(res.lives_left);
-        if (Array.isArray((res as any).guesses)) setWrongGuesses((res as any).guesses.slice(0, -1));
-        setGuess('');
+        const final = (res as any).guesses?.[(res as any).guesses.length - 1] ?? normGuess;
+        setReveal(final);
+        setGuess(final);
         return;
       }
 
       if ('correct' in res && res.correct) {
         setStatus('won');
         setLives(res.lives_left);
-        if (Array.isArray(res.guesses)) setWrongGuesses(res.guesses.slice(0, -1));
-        setGuess('');
+        const final = res.guesses?.[res.guesses.length - 1] ?? normGuess;
+        setReveal(final);
+        setGuess(final);
         return;
       }
 
@@ -117,17 +139,26 @@ export default function Home() {
         setShake(true);
         setTimeout(() => setMissPulse(false), 220);
         setTimeout(() => setShake(false), 320);
-        if (res.gameOver) setStatus('lost');
+        if (res.gameOver) {
+          setStatus('lost');
+          if (res.answer && typeof res.answer === 'string') {
+            setReveal(res.answer);
+            setGuess(res.answer);
+          } else {
+            setGuess('');
+          }
+        } else {
+          setGuess('');
+        }
+      } else {
+        setGuess('');
       }
-
-      setGuess('');
     } finally {
       setSubmitting(false);
       setTimeout(() => { submitLock.current = false; }, 0);
     }
   }, [today, status, guess, submitting, tz, guesses]);
 
-  // global physical keyboard
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (status !== 'playing') return;
@@ -141,7 +172,7 @@ export default function Home() {
         setGuess((v) => v.slice(0, -1));
       } else if (k === 'Enter') {
         e.preventDefault();
-        submitGuess(); // always current because of useCallback
+        submitGuess();
       }
     }
     window.addEventListener('keydown', onKey);
@@ -153,6 +184,10 @@ export default function Home() {
   if (status === 'won' && guesses.length > 0) for (const ch of guesses[guesses.length - 1].toUpperCase()) if (/[A-Z]/.test(ch)) keyStates[ch] = 'correct';
 
   const kbEnabled = status === 'playing' && !submitting;
+
+  const tileVariant: 'neutral' | 'success' | 'error' =
+    status === 'won' ? 'success' : status === 'lost' ? 'error' : 'neutral';
+  const tileValue = status === 'playing' ? guess : (reveal || guess);
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -182,18 +217,13 @@ export default function Home() {
               <p className="mt-4 text-sm text-red-600">No clues available for today.</p>
             )}
 
-            {status !== 'playing' && (
-              <div className="mt-3 rounded-md border border-black/10 bg-gray-100 p-3 text-center">
-                {status === 'won' ? (
-                  <p className="font-bold">Correct. Points: {lives}. Come back tomorrow.</p>
-                ) : (
-                  <p className="font-bold">No lives left. Try again tomorrow.</p>
-                )}
-              </div>
-            )}
-
             <div className={`mt-2 ${shake ? 'animate-shake' : ''}`}>
-              <AnswerTile value={guess} disabled={submitting || status !== 'playing'} bumpKey={bumpTick} />
+              <AnswerTile
+                value={tileValue}
+                disabled={true}
+                bumpKey={bumpTick}
+                variant={tileVariant}
+              />
             </div>
           </section>
 

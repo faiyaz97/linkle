@@ -1,4 +1,3 @@
-// src/app/api/today/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { todayKey } from '@/lib/time';
 import { createClient } from '@supabase/supabase-js';
@@ -15,17 +14,29 @@ function sbAdmin() {
   );
 }
 
+function ensureAnonCookie() {
+  const jar = cookies();
+  let anon = jar.get('anon_id')?.value;
+  if (!anon) {
+    anon = 'guest-' + crypto.randomUUID();
+    const res = NextResponse.json({});
+    res.cookies.set('anon_id', anon, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: true,
+      maxAge: 60 * 60 * 24 * 365,
+      path: '/',
+    });
+    return { anon, cookieResponse: res };
+  }
+  return { anon, cookieResponse: null as NextResponse | null };
+}
+
 export async function GET(req: NextRequest) {
   try {
     const tz = req.nextUrl.searchParams.get('tz') ?? 'UTC';
     const { idx, date } = todayKey(tz);
-
-    // Anon cookie (no intermediate response merging)
-    const jar = cookies();
-    let anon = jar.get('anon_id')?.value;
-    const needCookie = !anon;
-    if (!anon) anon = 'guest-' + crypto.randomUUID();
-
+    const { anon, cookieResponse } = ensureAnonCookie();
     const sb = sbAdmin();
 
     const { data: pub, error: pubErr } = await sb
@@ -35,13 +46,10 @@ export async function GET(req: NextRequest) {
       .single();
 
     if (pubErr || !pub) {
-      const res = NextResponse.json({ error: pubErr?.message ?? 'Not found', idx }, { status: 404 });
-      if (needCookie) {
-        res.cookies.set('anon_id', anon!, {
-          httpOnly: true, sameSite: 'lax', secure: true, maxAge: 60 * 60 * 24 * 365, path: '/',
-        });
-      }
-      return res;
+      const payload = { error: pubErr?.message ?? 'Not found', idx };
+      return cookieResponse
+        ? new NextResponse(JSON.stringify(payload), { status: 404, headers: cookieResponse.headers })
+        : NextResponse.json(payload, { status: 404 });
     }
 
     const clues = Array.isArray(pub.clues)
@@ -54,8 +62,24 @@ export async function GET(req: NextRequest) {
       .from('submissions')
       .select('lives_left, solved, points, guesses')
       .eq('puzzle_idx', idx)
-      .eq('anon_id', anon!)
+      .eq('anon_id', anon)
       .maybeSingle();
+
+    let answer: string | undefined;
+
+    if (sub?.solved) {
+      // show the final submitted guess
+      const arr = Array.isArray(sub.guesses) ? (sub.guesses as string[]) : [];
+      answer = arr.at(-1);
+    } else if (sub && sub.lives_left === 0) {
+      // fetch the target word to reveal on loss
+      const { data: sec } = await sb
+        .from('puzzles_secret')
+        .select('target_word')
+        .eq('idx', idx)
+        .single();
+      if (sec?.target_word) answer = String(sec.target_word);
+    }
 
     const payload = {
       idx: pub.idx,
@@ -70,15 +94,12 @@ export async function GET(req: NextRequest) {
             guesses: Array.isArray(sub.guesses) ? (sub.guesses as string[]) : [],
           }
         : null,
+      answer, // may be undefined if still playing
     };
 
-    const res = NextResponse.json(payload, { status: 200 });
-    if (needCookie) {
-      res.cookies.set('anon_id', anon!, {
-        httpOnly: true, sameSite: 'lax', secure: true, maxAge: 60 * 60 * 24 * 365, path: '/',
-      });
-    }
-    return res;
+    return cookieResponse
+      ? new NextResponse(JSON.stringify(payload), { headers: cookieResponse.headers })
+      : NextResponse.json(payload);
   } catch (e: any) {
     return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
   }

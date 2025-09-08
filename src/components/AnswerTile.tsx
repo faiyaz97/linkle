@@ -9,6 +9,7 @@ export type AnswerTileProps = {
   disabled?: boolean;
   bumpKey?: number;
   className?: string;
+  variant?: 'neutral' | 'success' | 'error'; // controls colors
 };
 
 const BASE_PX = 40;
@@ -21,6 +22,7 @@ export default function AnswerTile({
   disabled,
   bumpKey,
   className = '',
+  variant = 'neutral',
 }: AnswerTileProps) {
   const safeValue = typeof value === 'string' ? value : '';
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -74,10 +76,18 @@ export default function AnswerTile({
 
   const letters = useMemo(() => Array.from(safeValue), [safeValue]);
 
+  const palette =
+    variant === 'success'
+      ? 'bg-[#22c55e] text-white' // green-500
+      : variant === 'error'
+      ? 'bg-[#ef4444] text-white' // red-500
+      : 'bg-[lightgrey] text-black';
+
   const base =
     'h-[80px] w-full border rounded-none shadow-sm ' +
-    'bg-[lightgrey] text-black font-sans font-bold leading-none tracking-tight ' +
-    'flex items-center justify-center px-4 select-none overflow-hidden';
+    'font-sans font-bold leading-none tracking-tight ' +
+    'flex items-center justify-center px-4 select-none overflow-hidden ' +
+    palette;
 
   return (
     <div
@@ -88,7 +98,9 @@ export default function AnswerTile({
       className={[base, disabled ? 'opacity-70' : '', className].join(' ')}
     >
       {letters.length === 0 ? (
-        <span className="text-black/40" style={{ fontSize: BASE_PX }}>{placeholder}</span>
+        <span className={variant === 'neutral' ? 'text-black/40' : 'text-white/80'} style={{ fontSize: BASE_PX }}>
+          {placeholder}
+        </span>
       ) : (
         <div className="whitespace-nowrap text-center" style={{ fontSize: fontPx }}>
           {letters.map((ch, i) => (
