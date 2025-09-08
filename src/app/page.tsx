@@ -1,6 +1,6 @@
 // src/app/page.tsx
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import NavBar from '@/components/NavBar';
 import Hearts from '@/components/Hearts';
 import ClueTile from '@/components/ClueTile';
@@ -27,10 +27,11 @@ export default function Home() {
   const [lives, setLives] = useState(3);
   const [guesses, setGuesses] = useState<string[]>([]);
   const [wrongGuesses, setWrongGuesses] = useState<string[]>([]);
-  const [guess, setGuess] = useState('');
+  const [guess, setGuess] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
   const [missPulse, setMissPulse] = useState(false);
   const [shake, setShake] = useState(false);
+  const [bumpTick, setBumpTick] = useState(0);
   const submitLock = useRef(false);
 
   useEffect(() => {
@@ -62,16 +63,12 @@ export default function Home() {
     return () => { cancelled = true; };
   }, [tz]);
 
-  function isDuplicateLocal(g: string) {
-    const norm = g.trim().toLowerCase();
-    return guesses.includes(norm);
-  }
-
-  async function submitGuess() {
+  const submitGuess = useCallback(async () => {
     if (!today || status !== 'playing' || !guess.trim() || submitting || submitLock.current) return;
 
     const normGuess = guess.trim().toLowerCase();
-    if (isDuplicateLocal(normGuess)) {
+    const isDup = guesses.includes(normGuess);
+    if (isDup) {
       setShake(true);
       setTimeout(() => setShake(false), 320);
       setGuess('');
@@ -128,69 +125,89 @@ export default function Home() {
       setSubmitting(false);
       setTimeout(() => { submitLock.current = false; }, 0);
     }
-  }
+  }, [today, status, guess, submitting, tz, guesses]);
 
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    submitGuess();
-  }
+  // global physical keyboard
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (status !== 'playing') return;
+      const k = e.key;
+      if (/^[a-zA-Z]$/.test(k)) {
+        e.preventDefault();
+        setGuess((v) => v + k);
+        setBumpTick((n) => n + 1);
+      } else if (k === 'Backspace') {
+        e.preventDefault();
+        setGuess((v) => v.slice(0, -1));
+      } else if (k === 'Enter') {
+        e.preventDefault();
+        submitGuess(); // always current because of useCallback
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [status, submitGuess]);
 
   const keyStates: Partial<Record<string, KeyState>> = {};
   for (const w of wrongGuesses) for (const ch of w.toUpperCase()) if (/[A-Z]/.test(ch)) keyStates[ch] = keyStates[ch] ?? 'miss';
   if (status === 'won' && guesses.length > 0) for (const ch of guesses[guesses.length - 1].toUpperCase()) if (/[A-Z]/.test(ch)) keyStates[ch] = 'correct';
 
+  const kbEnabled = status === 'playing' && !submitting;
+
   return (
     <div className="min-h-screen flex flex-col">
       <NavBar />
 
-      {/* full-width, vertically centered */}
       <main className="w-full flex-1 flex items-center">
         <div className="w-full">
-          {/* section 1 */}
           <section className="mx-auto w-full max-w-md px-4">
-            {/* top row: bottom-aligned, no bottom spacing */}
-            <div className="flex h-8 md:h-9 items-end justify-between mb-0 pb-0">
-              <div className="flex flex-wrap gap-x-1 leading-none mb-0 pb-0">
+            <div className="flex h-8 md:h-9 items-end justify-between">
+              <div className="flex flex-wrap gap-x-1 leading-none">
                 {wrongGuesses.map((g, i) => (
                   <span key={i} className="text-red-600 font-bold text-sm leading-none">
                     {g.toUpperCase()}
                   </span>
                 ))}
               </div>
-              <div className="shrink-0 flex items-end leading-none mb-0 pb-0">
+              <div className="shrink-0 flex items-end leading-none">
                 <Hearts lives={lives} pulse={missPulse} />
               </div>
             </div>
 
-            {/* clues */}
             {Array.isArray(today?.clues) && today!.clues.length > 0 ? (
-              <div className="space-y-2 mt-1">
+              <div className="space-y-2 mt-2">
                 {today!.clues.map((c, i) => <ClueTile key={i} text={c} />)}
               </div>
             ) : (
               <p className="mt-4 text-sm text-red-600">No clues available for today.</p>
             )}
 
-            {/* answer input */}
-            <form className={`mt-2 ${shake ? 'animate-shake' : ''}`} onSubmit={onSubmit}>
-              <AnswerTile
-                value={guess}
-                onChange={setGuess}
-                disabled={submitting || status !== 'playing'}
-                placeholder="ANSWER"
-              />
-              <button type="submit" className="sr-only">Submit</button>
-            </form>
+            {status !== 'playing' && (
+              <div className="mt-3 rounded-md border border-black/10 bg-gray-100 p-3 text-center">
+                {status === 'won' ? (
+                  <p className="font-bold">Correct. Points: {lives}. Come back tomorrow.</p>
+                ) : (
+                  <p className="font-bold">No lives left. Try again tomorrow.</p>
+                )}
+              </div>
+            )}
+
+            <div className={`mt-2 ${shake ? 'animate-shake' : ''}`}>
+              <AnswerTile value={guess} disabled={submitting || status !== 'playing'} bumpKey={bumpTick} />
+            </div>
           </section>
 
-          {/* section 2: keyboard */}
           <section className="mx-auto w-full max-w-xl px-4">
             <Keyboard
               className="mt-4"
               states={keyStates}
-              onKey={(ch) => setGuess((v) => v + ch)}
-              onBackspace={() => setGuess((v) => v.slice(0, -1))}
-              onEnter={() => submitGuess()}
+              onKey={(ch) => {
+                if (!kbEnabled) return;
+                setGuess((v) => v + ch);
+                setBumpTick((n) => n + 1);
+              }}
+              onBackspace={() => kbEnabled && setGuess((v) => v.slice(0, -1))}
+              onEnter={() => kbEnabled && submitGuess()}
             />
           </section>
         </div>
