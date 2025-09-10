@@ -1,4 +1,3 @@
-// src/components/AnswerTile.tsx
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -7,9 +6,10 @@ export type AnswerTileProps = {
   value?: string;
   placeholder?: string;
   disabled?: boolean;
-  bumpKey?: number;
+  bumpKey?: number;                 // per-letter bump while typing
+  celebrateKey?: number;            // increment to trigger win animation
   className?: string;
-  variant?: 'neutral' | 'success' | 'error'; // controls colors
+  variant?: 'neutral' | 'success' | 'error';
 };
 
 const BASE_PX = 40;
@@ -21,6 +21,7 @@ export default function AnswerTile({
   placeholder = 'Answer',
   disabled,
   bumpKey,
+  celebrateKey,
   className = '',
   variant = 'neutral',
 }: AnswerTileProps) {
@@ -31,6 +32,7 @@ export default function AnswerTile({
   const [bumpIndex, setBumpIndex] = useState<number | null>(null);
   const [containerW, setContainerW] = useState<number>(0);
 
+  // track container width
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -45,6 +47,7 @@ export default function AnswerTile({
     };
   }, []);
 
+  // per-letter bump while typing
   useEffect(() => {
     if (!safeValue) return;
     setBumpIndex(safeValue.length - 1);
@@ -52,6 +55,7 @@ export default function AnswerTile({
     return () => clearTimeout(t);
   }, [bumpKey, safeValue]);
 
+  // auto-fit font size
   useEffect(() => {
     const el = containerRef.current;
     const m = measureRef.current;
@@ -78,9 +82,9 @@ export default function AnswerTile({
 
   const palette =
     variant === 'success'
-      ? 'bg-[#22c55e] text-white' // green-500
+      ? 'bg-[#22c55e] text-white'          // friendly green
       : variant === 'error'
-      ? 'bg-[#ef4444] text-white' // red-500
+      ? 'bg-[#ef4444] text-white'          // friendly red
       : 'bg-[lightgrey] text-black';
 
   const base =
@@ -89,6 +93,12 @@ export default function AnswerTile({
     'flex items-center justify-center px-4 select-none overflow-hidden ' +
     palette;
 
+  // tile glow on win
+  const glowStyle =
+    variant === 'success' && typeof celebrateKey === 'number'
+      ? { animation: 'win-glow 700ms ease-out both' as const }
+      : undefined;
+
   return (
     <div
       aria-label="Answer"
@@ -96,6 +106,7 @@ export default function AnswerTile({
       aria-disabled={disabled ? 'true' : 'false'}
       ref={containerRef}
       className={[base, disabled ? 'opacity-70' : '', className].join(' ')}
+      style={glowStyle}
     >
       {letters.length === 0 ? (
         <span className={variant === 'neutral' ? 'text-black/40' : 'text-white/80'} style={{ fontSize: BASE_PX }}>
@@ -103,15 +114,22 @@ export default function AnswerTile({
         </span>
       ) : (
         <div className="whitespace-nowrap text-center" style={{ fontSize: fontPx }}>
-          {letters.map((ch, i) => (
-            <span
-              key={i}
-              className="inline-block transition-transform duration-150"
-              style={{ transform: i === bumpIndex ? 'scale(1.1)' : 'scale(1)' }}
-            >
-              {String(ch).toUpperCase()}
-            </span>
-          ))}
+          {letters.map((ch, i) => {
+            // letter wave on win, small bump on type otherwise
+            const isWin = variant === 'success' && typeof celebrateKey === 'number';
+            const style = isWin
+              ? { animation: 'win-bounce 480ms ease-out both', animationDelay: `${i * 50}ms` }
+              : { transform: i === bumpIndex ? 'scale(1.1)' : 'scale(1)' };
+            return (
+              <span
+                key={i}
+                className="inline-block transition-transform duration-150"
+                style={style as React.CSSProperties}
+              >
+                {String(ch).toUpperCase()}
+              </span>
+            );
+          })}
         </div>
       )}
 

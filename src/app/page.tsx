@@ -13,7 +13,7 @@ type Today = {
   local_date: string;
   clues: string[];
   submission: null | { lives_left: number; solved: boolean; points: number; guesses: string[] };
-  answer?: string; // NEW
+  answer?: string;
 };
 type GuessResp =
   | { alreadySolved: true; lives_left: number; points: number; guesses?: string[] }
@@ -28,11 +28,12 @@ export default function Home() {
   const [guesses, setGuesses] = useState<string[]>([]);
   const [wrongGuesses, setWrongGuesses] = useState<string[]>([]);
   const [guess, setGuess] = useState<string>('');
-  const [reveal, setReveal] = useState<string>(''); // final shown word
+  const [reveal, setReveal] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
   const [missPulse, setMissPulse] = useState(false);
   const [shake, setShake] = useState(false);
   const [bumpTick, setBumpTick] = useState(0);
+  const [celebrateTick, setCelebrateTick] = useState(0); // NEW
   const submitLock = useRef(false);
 
   useEffect(() => {
@@ -55,31 +56,17 @@ export default function Home() {
             const ans = data.answer || all.at(-1) || '';
             setReveal(ans);
             setGuess(ans);
+            // do NOT trigger celebrate here, only on the actual win action
           } else if (data.submission.lives_left === 0) {
             setStatus('lost');
-            if (data.answer) {
-              setReveal(data.answer);
-              setGuess(data.answer);
-            } else {
-              setReveal(''); // backend didn’t return; will show placeholder until answered elsewhere
-              setGuess('');
-            }
+            if (data.answer) { setReveal(data.answer); setGuess(data.answer); }
           } else {
-            setStatus('playing');
-            setGuess('');
-            setReveal('');
+            setStatus('playing'); setGuess(''); setReveal('');
           }
         } else {
-          setLives(3);
-          setGuesses([]);
-          setWrongGuesses([]);
-          setStatus('playing');
-          setGuess('');
-          setReveal('');
+          setLives(3); setGuesses([]); setWrongGuesses([]); setStatus('playing'); setGuess(''); setReveal('');
         }
-      } catch {
-        if (!cancelled) setToday(undefined);
-      }
+      } catch {}
     })();
     return () => { cancelled = true; };
   }, [tz]);
@@ -89,10 +76,8 @@ export default function Home() {
 
     const normGuess = guess.trim().toLowerCase();
     if (guesses.includes(normGuess)) {
-      setShake(true);
-      setTimeout(() => setShake(false), 320);
-      setGuess('');
-      return;
+      setShake(true); setTimeout(() => setShake(false), 320);
+      setGuess(''); return;
     }
 
     submitLock.current = true;
@@ -108,45 +93,36 @@ export default function Home() {
       if ('guesses' in res && Array.isArray(res.guesses)) setGuesses(res.guesses);
 
       if ('alreadySolved' in res) {
-        setStatus('won');
-        setLives(res.lives_left);
+        setStatus('won'); setLives(res.lives_left);
         const final = (res as any).guesses?.[(res as any).guesses.length - 1] ?? normGuess;
-        setReveal(final);
-        setGuess(final);
+        setReveal(final); setGuess(final);
+        setCelebrateTick((n) => n + 1);            // trigger animation
         return;
       }
 
       if ('correct' in res && res.correct) {
-        setStatus('won');
-        setLives(res.lives_left);
+        setStatus('won'); setLives(res.lives_left);
         const final = res.guesses?.[res.guesses.length - 1] ?? normGuess;
-        setReveal(final);
-        setGuess(final);
+        setReveal(final); setGuess(final);
+        setCelebrateTick((n) => n + 1);            // trigger animation
         return;
       }
 
       if ('correct' in res && !res.correct) {
         if ((res as any).duplicate) {
-          setShake(true);
-          setTimeout(() => setShake(false), 320);
-          setGuess('');
-          return;
+          setShake(true); setTimeout(() => setShake(false), 320);
+          setGuess(''); return;
         }
         setLives(res.lives_left);
         if (Array.isArray(res.guesses)) setWrongGuesses(res.guesses);
         else setWrongGuesses((prev) => [...prev, normGuess]);
-        setMissPulse(true);
-        setShake(true);
+        setMissPulse(true); setShake(true);
         setTimeout(() => setMissPulse(false), 220);
         setTimeout(() => setShake(false), 320);
         if (res.gameOver) {
           setStatus('lost');
-          if (res.answer && typeof res.answer === 'string') {
-            setReveal(res.answer);
-            setGuess(res.answer);
-          } else {
-            setGuess('');
-          }
+          if (res.answer && typeof res.answer === 'string') { setReveal(res.answer); setGuess(res.answer); }
+          else { setGuess(''); }
         } else {
           setGuess('');
         }
@@ -159,21 +135,14 @@ export default function Home() {
     }
   }, [today, status, guess, submitting, tz, guesses]);
 
+  // physical keyboard
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (status !== 'playing') return;
       const k = e.key;
-      if (/^[a-zA-Z]$/.test(k)) {
-        e.preventDefault();
-        setGuess((v) => v + k);
-        setBumpTick((n) => n + 1);
-      } else if (k === 'Backspace') {
-        e.preventDefault();
-        setGuess((v) => v.slice(0, -1));
-      } else if (k === 'Enter') {
-        e.preventDefault();
-        submitGuess();
-      }
+      if (/^[a-zA-Z]$/.test(k)) { e.preventDefault(); setGuess((v) => v + k); setBumpTick((n) => n + 1); }
+      else if (k === 'Backspace') { e.preventDefault(); setGuess((v) => v.slice(0, -1)); }
+      else if (k === 'Enter') { e.preventDefault(); submitGuess(); }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -199,9 +168,7 @@ export default function Home() {
             <div className="flex h-8 md:h-9 items-end justify-between">
               <div className="flex flex-wrap gap-x-1 leading-none">
                 {wrongGuesses.map((g, i) => (
-                  <span key={i} className="text-red-600 font-bold text-sm leading-none">
-                    {g.toUpperCase()}
-                  </span>
+                  <span key={i} className="text-red-600 font-bold text-sm leading-none">{g.toUpperCase()}</span>
                 ))}
               </div>
               <div className="shrink-0 flex items-end leading-none">
@@ -222,6 +189,7 @@ export default function Home() {
                 value={tileValue}
                 disabled={true}
                 bumpKey={bumpTick}
+                celebrateKey={celebrateTick}   // triggers win animation once
                 variant={tileVariant}
               />
             </div>
@@ -231,11 +199,7 @@ export default function Home() {
             <Keyboard
               className="mt-4"
               states={keyStates}
-              onKey={(ch) => {
-                if (!kbEnabled) return;
-                setGuess((v) => v + ch);
-                setBumpTick((n) => n + 1);
-              }}
+              onKey={(ch) => { if (!kbEnabled) return; setGuess((v) => v + ch); setBumpTick((n) => n + 1); }}
               onBackspace={() => kbEnabled && setGuess((v) => v.slice(0, -1))}
               onEnter={() => kbEnabled && submitGuess()}
             />
