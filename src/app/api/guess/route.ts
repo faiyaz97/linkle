@@ -1,10 +1,16 @@
+// src/app/api/guess/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { cookies } from 'next/headers';
-import crypto from 'crypto';
 
 export const runtime = 'nodejs';
 
+function sbAnon() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    { auth: { persistSession: false } }
+  );
+}
 function sbAdmin() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -13,126 +19,99 @@ function sbAdmin() {
   );
 }
 
-function ensureAnonCookie() {
-  const jar = cookies();
-  let anon = jar.get('anon_id')?.value;
-  if (!anon) {
-    anon = 'guest-' + crypto.randomUUID();
-    const res = NextResponse.json({});
-    res.cookies.set('anon_id', anon, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: true,
-      maxAge: 60 * 60 * 24 * 365,
-      path: '/',
-    });
-    return { anon, cookieResponse: res };
-  }
-  return { anon, cookieResponse: null as NextResponse | null };
-}
-
 export async function POST(req: NextRequest) {
   try {
-    const { idx, guess } = await req.json();
-    if (!Number.isInteger(idx) || !guess || typeof guess !== 'string') {
+    const body = await req.json();
+    const idx = body?.idx;
+    const guess = String(body?.guess ?? '');
+    const reveal = !!body?.reveal;
+
+    if (!Number.isInteger(idx) || !guess) {
       return NextResponse.json({ error: 'Bad request' }, { status: 400 });
     }
 
-    const { anon, cookieResponse } = ensureAnonCookie();
-    const sb = sbAdmin();
+    const token = (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
+    const anon = sbAnon();
+    const { data: auth } = token ? await anon.auth.getUser(token) : { data: { user: null } as any };
+    const user = auth?.user ?? null;
 
-    // Fetch target word
-    const { data: sec, error: secErr } = await sb
+    const admin = sbAdmin();
+
+    const { data: sec, error: secErr } = await admin
       .from('puzzles_secret')
       .select('target_word')
       .eq('idx', idx)
       .single();
-
-    if (secErr || !sec?.target_word) {
-      const payload = { error: secErr?.message ?? 'Puzzle not found' };
-      return cookieResponse
-        ? new NextResponse(JSON.stringify(payload), { status: 404, headers: cookieResponse.headers })
-        : NextResponse.json(payload, { status: 404 });
-    }
+    if (secErr || !sec?.target_word) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
     const target = String(sec.target_word).trim().toLowerCase();
-    const normGuess = String(guess).trim().toLowerCase();
+    const normGuess = guess.trim().toLowerCase();
+
+    // Guest: stateless validation. No DB writes.
+    if (!user) {
+      const correct = normGuess === target;
+      return NextResponse.json({ correct, ...(reveal ? { answer: target } : {}) });
+    }
+
+    // Authenticated: persist in DB
     const START_LIVES = 3;
 
-    // Read existing submission
-    const { data: sub } = await sb
+    const { data: sub } = await admin
       .from('submissions')
-      .select('id, lives_left, solved, points, guesses')
+      .select('id,lives_left,solved,points,guesses,solved_at,created_at')
       .eq('puzzle_idx', idx)
-      .eq('anon_id', anon)
+      .eq('user_id', user.id)
       .maybeSingle();
 
     const existingGuesses: string[] = Array.isArray(sub?.guesses) ? (sub!.guesses as string[]) : [];
     const livesLeft = typeof sub?.lives_left === 'number' ? sub!.lives_left : START_LIVES;
 
-    // Already finished?
     if (sub?.solved) {
-      const payload = {
+      return NextResponse.json({
         alreadySolved: true as const,
         lives_left: livesLeft,
         points: sub.points ?? livesLeft,
         guesses: existingGuesses,
-      };
-      return cookieResponse
-        ? new NextResponse(JSON.stringify(payload), { headers: cookieResponse.headers })
-        : NextResponse.json(payload);
+      });
     }
     if (sub && livesLeft === 0) {
-      const payload = {
+      return NextResponse.json({
         correct: false as const,
         lives_left: 0,
         gameOver: true,
         guesses: existingGuesses,
-        answer: target, // IMPORTANT: reveal on loss
-      };
-      return cookieResponse
-        ? new NextResponse(JSON.stringify(payload), { headers: cookieResponse.headers })
-        : NextResponse.json(payload);
+        answer: target,
+      });
     }
 
-    // Duplicate guess?
     if (existingGuesses.includes(normGuess)) {
-      const payload = {
+      return NextResponse.json({
         correct: false as const,
         lives_left: livesLeft,
         gameOver: false,
         guesses: existingGuesses,
         duplicate: true,
-      };
-      return cookieResponse
-        ? new NextResponse(JSON.stringify(payload), { headers: cookieResponse.headers })
-        : NextResponse.json(payload);
+      });
     }
 
-    // Process guess
     if (normGuess === target) {
       const newGuesses = [...existingGuesses, normGuess];
       const points = livesLeft;
 
       let upd;
       if (sub?.id) {
-        const { data } = await sb
+        const { data } = await admin
           .from('submissions')
-          .update({
-            guesses: newGuesses,
-            solved: true,
-            points,
-            solved_at: new Date().toISOString(),
-          })
+          .update({ guesses: newGuesses, solved: true, points, solved_at: new Date().toISOString() })
           .eq('id', sub.id)
-          .select('lives_left, points, guesses')
+          .select('lives_left,points,guesses')
           .single();
         upd = data;
       } else {
-        const { data } = await sb
+        const { data } = await admin
           .from('submissions')
           .insert({
-            anon_id: anon,
+            user_id: user.id,
             puzzle_idx: idx,
             guesses: newGuesses,
             lives_left: START_LIVES,
@@ -140,66 +119,54 @@ export async function POST(req: NextRequest) {
             points,
             solved_at: new Date().toISOString(),
           })
-          .select('lives_left, points, guesses')
+          .select('lives_left,points,guesses')
           .single();
         upd = data;
       }
 
-      const payload = {
+      return NextResponse.json({
         correct: true as const,
         lives_left: upd?.lives_left ?? livesLeft,
         points: upd?.points ?? points,
         guesses: (upd?.guesses as string[]) ?? newGuesses,
-      };
-      return cookieResponse
-        ? new NextResponse(JSON.stringify(payload), { headers: cookieResponse.headers })
-        : NextResponse.json(payload);
+      });
     } else {
-      // Wrong guess: decrement life
       const nextLives = Math.max(0, livesLeft - 1);
       const newGuesses = [...existingGuesses, normGuess];
 
       let upd;
       if (sub?.id) {
-        const { data } = await sb
+        const { data } = await admin
           .from('submissions')
-          .update({
-            guesses: newGuesses,
-            lives_left: nextLives,
-            solved: false,
-          })
+          .update({ guesses: newGuesses, lives_left: nextLives, solved: false })
           .eq('id', sub.id)
-          .select('lives_left, guesses')
+          .select('lives_left,guesses')
           .single();
         upd = data;
       } else {
-        const { data } = await sb
+        const { data } = await admin
           .from('submissions')
           .insert({
-            anon_id: anon,
+            user_id: user.id,
             puzzle_idx: idx,
             guesses: newGuesses,
             lives_left: nextLives,
             solved: false,
             points: 0,
           })
-          .select('lives_left, guesses')
+          .select('lives_left,guesses')
           .single();
         upd = data;
       }
 
       const gameOver = (upd?.lives_left ?? nextLives) === 0;
-      const payload = {
+      return NextResponse.json({
         correct: false as const,
         lives_left: upd?.lives_left ?? nextLives,
         gameOver,
         guesses: (upd?.guesses as string[]) ?? newGuesses,
-        ...(gameOver ? { answer: target } : {}), // reveal on loss
-      };
-
-      return cookieResponse
-        ? new NextResponse(JSON.stringify(payload), { headers: cookieResponse.headers })
-        : NextResponse.json(payload);
+        ...(gameOver ? { answer: target } : {}),
+      });
     }
   } catch (e: any) {
     return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
