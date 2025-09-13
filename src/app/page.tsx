@@ -7,6 +7,7 @@ import ClueTile from '@/components/ClueTile';
 import AnswerTile from '@/components/AnswerTile';
 import Footer from '@/components/Footer';
 import Keyboard, { KeyState } from '@/components/Keyboard';
+import LeaderboardDialog from '@/components/LeaderboardDialog';
 import { supabase } from '@/lib/supabase-browser';
 import { getLocal, setLocal, LocalSub } from '@/lib/local-game';
 
@@ -45,6 +46,7 @@ export default function Home() {
   const [bumpTick, setBumpTick] = useState(0);
   const [celebrateTick, setCelebrateTick] = useState(0);
   const submitLock = useRef(false);
+  const [lbOpen, setLbOpen] = useState(false);
 
   // session token for Authorization header
   useEffect(() => {
@@ -343,7 +345,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen flex flex-col">
-      <NavBar />
+      <NavBar onOpenLeaderboard={() => setLbOpen(true)} />
 
       <main className="w-full flex-1 flex items-center">
         <div className="w-full">
@@ -395,6 +397,7 @@ export default function Home() {
       <div className="w-full flex justify-center">
         <Footer idx={today?.idx} localDate={today?.local_date} tz={tz} />
       </div>
+      <LeaderboardDialog open={lbOpen} onClose={() => setLbOpen(false)} tz={tz} />
     </div>
   );
 }
