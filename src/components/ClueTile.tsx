@@ -22,7 +22,7 @@ export default function ClueTile({
     'h-[60px] w-full flex items-center justify-center border rounded-none ' +
     'font-sans font-bold text-[40px] leading-none tracking-tight select-none ' +
     'shadow-sm focus:outline-none focus:ring-2 focus:ring-black/20 '+
-    'bg-[grey] text-[white] tracking-widest';
+    'bg-[rgb(114,127,143)] text-[white] tracking-widest ';
 
   const classes = [
     base,

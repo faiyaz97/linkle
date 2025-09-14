@@ -2,7 +2,6 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import NavBar from '@/components/NavBar';
-import Hearts from '@/components/Hearts';
 import ClueTile from '@/components/ClueTile';
 import AnswerTile from '@/components/AnswerTile';
 import Footer from '@/components/Footer';
@@ -10,6 +9,7 @@ import Keyboard, { KeyState } from '@/components/Keyboard';
 import LeaderboardDialog from '@/components/LeaderboardDialog';
 import { supabase } from '@/lib/supabase-browser';
 import { getLocal, setLocal, LocalSub } from '@/lib/local-game';
+import Strikes from '@/components/Strikes';
 
 type Today = {
   idx: number;
@@ -29,6 +29,9 @@ type GuessRespGuest =
   | { correct: true }
   | { correct: false; answer?: string };
 
+// local extension to read revealed answer if present
+type LocalSubExt = LocalSub & { revealed_answer?: string };
+
 export default function Home() {
   const [tz] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone);
   const [sessionToken, setSessionToken] = useState<string | null>(null);
@@ -41,21 +44,21 @@ export default function Home() {
   const [guess, setGuess] = useState<string>('');
   const [reveal, setReveal] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
-  const [missPulse, setMissPulse] = useState(false);
   const [shake, setShake] = useState(false);
   const [bumpTick, setBumpTick] = useState(0);
   const [celebrateTick, setCelebrateTick] = useState(0);
   const submitLock = useRef(false);
   const [lbOpen, setLbOpen] = useState(false);
 
-  // session token for Authorization header
+  const [strikeAnimIndex, setStrikeAnimIndex] = useState<number | null>(null);
+  const [strikeAnimKey, setStrikeAnimKey] = useState(0);
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSessionToken(data.session?.access_token ?? null));
     const { data } = supabase.auth.onAuthStateChange((_e, s) => setSessionToken(s?.access_token ?? null));
     return () => data.subscription.unsubscribe();
   }, []);
 
-  // load today's puzzle and hydrate state from server or local
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -68,7 +71,6 @@ export default function Home() {
         setToday(data);
 
         if (sessionToken) {
-          // logged in: use server submission
           if (data.submission) {
             setLives(data.submission.lives_left ?? 3);
             const all = Array.isArray(data.submission.guesses) ? data.submission.guesses : [];
@@ -102,21 +104,39 @@ export default function Home() {
             setReveal('');
           }
         } else {
-          // guest: hydrate from localStorage
-          const local = getLocal(data.idx);
+          const local = getLocal(data.idx) as LocalSubExt | null;
           if (local) {
             setLives(local.lives_left);
             setGuesses(local.guesses);
             setWrongGuesses(local.solved ? local.guesses.slice(0, -1) : local.guesses);
+
             if (local.solved) {
               setStatus('won');
-              setReveal(local.guesses.at(-1) ?? '');
-              setGuess(local.guesses.at(-1) ?? '');
+              const fin = local.guesses.at(-1) ?? '';
+              setReveal(fin);
+              setGuess(fin);
             } else if (local.lives_left === 0) {
               setStatus('lost');
-              // we do not store the answer locally; the UI will request reveal if needed after a final miss
-              setReveal('');
-              setGuess('');
+
+              // use cached answer if present, else fetch once and persist
+              let ans = local.revealed_answer ?? '';
+              if (!ans) {
+                try {
+                  const rr = await fetch('/api/guess', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ idx: data.idx, guess: '', reveal: true }),
+                  });
+                  const rj: any = await rr.json();
+                  if (rj && typeof rj.answer === 'string') {
+                    ans = rj.answer;
+                    const extended: LocalSubExt = { ...local, revealed_answer: ans };
+                    setLocal(extended as unknown as LocalSub);
+                  }
+                } catch {}
+              }
+              setReveal(ans);
+              setGuess(ans);
             } else {
               setStatus('playing');
               setGuess('');
@@ -135,9 +155,7 @@ export default function Home() {
         if (!cancelled) setToday(undefined);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [tz, sessionToken]);
 
   function isDuplicateLocal(g: string) {
@@ -145,7 +163,6 @@ export default function Home() {
     return guesses.includes(norm);
   }
 
-  // submit for logged-in users (persisted)
   const submitGuessAuth = useCallback(async () => {
     if (!today || status !== 'playing' || !guess.trim() || submitting || submitLock.current || !sessionToken) return;
 
@@ -196,13 +213,15 @@ export default function Home() {
           setGuess('');
           return;
         }
+
+        const newWrong = Array.isArray(res.guesses) ? res.guesses : [...wrongGuesses, normGuess];
+        const animIdx = Math.min(newWrong.length - 1, 2);
+
         setLives(res.lives_left);
-        if (Array.isArray(res.guesses)) setWrongGuesses(res.guesses);
-        else setWrongGuesses((prev) => [...prev, normGuess]);
-        setMissPulse(true);
-        setShake(true);
-        setTimeout(() => setMissPulse(false), 220);
-        setTimeout(() => setShake(false), 320);
+        setWrongGuesses(newWrong);
+        setStrikeAnimIndex(animIdx);
+        setStrikeAnimKey((k) => k + 1);
+
         if (res.gameOver) {
           setStatus('lost');
           if (res.answer && typeof res.answer === 'string') {
@@ -219,13 +238,10 @@ export default function Home() {
       }
     } finally {
       setSubmitting(false);
-      setTimeout(() => {
-        submitLock.current = false;
-      }, 0);
+      setTimeout(() => { submitLock.current = false; }, 0);
     }
-  }, [today, status, guess, submitting, tz, sessionToken, guesses]);
+  }, [today, status, guess, submitting, tz, sessionToken, wrongGuesses, guesses]);
 
-  // submit for guests (local only)
   const submitGuessGuest = useCallback(async () => {
     if (!today || status !== 'playing' || !guess.trim() || submitting || submitLock.current || sessionToken) return;
 
@@ -240,7 +256,6 @@ export default function Home() {
     submitLock.current = true;
     setSubmitting(true);
     try {
-      // ask server only if the guess is correct; do not send any client lives
       const r = await fetch('/api/guess', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -248,7 +263,6 @@ export default function Home() {
       });
       const res: GuessRespGuest = await r.json();
 
-      // prepare local submission
       const current: LocalSub = {
         idx: today.idx,
         guesses: [...guesses, normGuess],
@@ -275,24 +289,28 @@ export default function Home() {
       // wrong
       current.lives_left = Math.max(0, current.lives_left - 1);
       setLocal(current);
+
+      const newWrong = current.guesses;
+      const animIdx = Math.min(newWrong.length - 1, 2);
+
       setLives(current.lives_left);
       setGuesses(current.guesses);
-      setWrongGuesses(current.guesses);
-
-      setMissPulse(true);
-      setShake(true);
-      setTimeout(() => setMissPulse(false), 220);
-      setTimeout(() => setShake(false), 320);
+      setWrongGuesses(newWrong);
+      setStrikeAnimIndex(animIdx);
+      setStrikeAnimKey((k) => k + 1);
 
       if (current.lives_left === 0) {
-        // request reveal
         const rr = await fetch('/api/guess', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ idx: today.idx, guess: normGuess, reveal: true }),
         });
-        const rj: GuessRespGuest = await rr.json();
-        const ans = (rj as any).answer as string | undefined;
+        const rj: any = await rr.json();
+        const ans = typeof rj?.answer === 'string' ? rj.answer : '';
+
+        // persist revealed answer so refresh keeps it
+        const extended: LocalSubExt = { ...(current as LocalSubExt), revealed_answer: ans };
+        setLocal(extended as unknown as LocalSub);
 
         setStatus('lost');
         if (ans) {
@@ -306,15 +324,12 @@ export default function Home() {
       }
     } finally {
       setSubmitting(false);
-      setTimeout(() => {
-        submitLock.current = false;
-      }, 0);
+      setTimeout(() => { submitLock.current = false; }, 0);
     }
   }, [today, status, guess, submitting, guesses, lives, sessionToken]);
 
   const submitGuess = sessionToken ? submitGuessAuth : submitGuessGuest;
 
-  // physical keyboard
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (status !== 'playing') return;
@@ -350,32 +365,31 @@ export default function Home() {
       <main className="w-full flex-1 flex items-center">
         <div className="w-full">
           <section className="mx-auto w-full max-w-md px-4">
-            <div className="flex h-8 md:h-9 items-end justify-between">
-              <div className="flex flex-wrap gap-x-1 leading-none">
-                {wrongGuesses.map((g, i) => (
-                  <span key={i} className="text-red-600 font-bold text-sm leading-none">
-                    {g.toUpperCase()}
-                  </span>
-                ))}
-              </div>
-              <div className="shrink-0 flex items-end leading-none">
-                <Hearts lives={lives} pulse={missPulse} />
-              </div>
-            </div>
-
             {Array.isArray(today?.clues) && today!.clues.length > 0 ? (
               <div className="space-y-2 mt-2">
-                {today!.clues.map((c, i) => (
-                  <ClueTile key={i} text={c} />
-                ))}
+                {today!.clues.map((c, i) => (<ClueTile key={i} text={c} />))}
               </div>
             ) : (
               <p className="mt-4 text-sm text-red-600">No clues available for today.</p>
             )}
 
             <div className={`mt-2 ${shake ? 'animate-shake' : ''}`}>
-              <AnswerTile value={tileValue} disabled={true} bumpKey={bumpTick} celebrateKey={celebrateTick} variant={tileVariant} />
+              <AnswerTile
+                value={tileValue}
+                disabled={true}
+                bumpKey={bumpTick}
+                celebrateKey={celebrateTick}
+                variant={tileVariant}
+              />
             </div>
+
+            <Strikes
+              className="mt-2"
+              lives={lives}
+              missed={wrongGuesses.map((g) => g.toUpperCase()).slice(0, 3)}
+              animateIndex={strikeAnimIndex}
+              animKey={strikeAnimKey}
+            />
           </section>
 
           <section className="mx-auto w-full max-w-xl px-4">
@@ -397,6 +411,7 @@ export default function Home() {
       <div className="w-full flex justify-center">
         <Footer idx={today?.idx} localDate={today?.local_date} tz={tz} />
       </div>
+
       <LeaderboardDialog open={lbOpen} onClose={() => setLbOpen(false)} tz={tz} />
     </div>
   );

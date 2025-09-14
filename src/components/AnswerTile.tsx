@@ -18,7 +18,7 @@ const H_PAD_PX = 32; // px-4 => 16 + 16
 
 export default function AnswerTile({
   value,
-  placeholder = 'Answer',
+  placeholder = 'YOUR ANSWER',
   disabled,
   bumpKey,
   celebrateKey,
