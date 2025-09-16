@@ -6,12 +6,16 @@ export type LocalSub = {
   solved: boolean;
   points: number;
   solved_at?: string;
-  revealed_answer?: string; // when a guest loses and we reveal
+  revealed_answer?: string;
+
+  // streak fields (guest)
+  streak_current?: number;
+  streak_best?: number;
+  streak_last_idx?: number;
 };
 
 const NS = 'linkle:v1:';
 const keyOf = (idx: number) => `${NS}${idx}`;
-
 const hasWindow = () => typeof window !== 'undefined' && typeof localStorage !== 'undefined';
 
 export function getLocal(idx: number): LocalSub | null {
@@ -39,32 +43,6 @@ export function clearLocal(idx: number) {
   } catch {}
 }
 
-/** NEW: list all guest games stored locally (sorted by idx desc). */
-export function listAllLocal(): LocalSub[] {
-  if (!hasWindow()) return [];
-  const out: LocalSub[] = [];
-  try {
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (!k || !k.startsWith(NS)) continue;
-      const raw = localStorage.getItem(k);
-      if (!raw) continue;
-      try {
-        const obj = JSON.parse(raw) as LocalSub;
-        if (obj && typeof obj.idx === 'number') out.push(obj);
-      } catch {
-        // ignore malformed entries
-      }
-    }
-  } catch {
-    return [];
-  }
-  // newest first
-  out.sort((a, b) => b.idx - a.idx);
-  return out;
-}
-
-/** Optional helpers some UIs need. */
 export function clearAllLocal() {
   if (!hasWindow()) return;
   const keys: string[] = [];
@@ -77,13 +55,38 @@ export function clearAllLocal() {
   });
 }
 
-export function upsertLocal(patch: Partial<LocalSub> & { idx: number }) {
-  const prev = getLocal(patch.idx) ?? {
-    idx: patch.idx,
-    guesses: [],
-    lives_left: 3,
-    solved: false,
-    points: 0,
-  };
-  setLocal({ ...prev, ...patch });
+export function listAllLocal(): LocalSub[] {
+  if (!hasWindow()) return [];
+  const out: LocalSub[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (!k || !k.startsWith(NS)) continue;
+    const raw = localStorage.getItem(k);
+    if (!raw) continue;
+    try {
+      const obj = JSON.parse(raw) as LocalSub;
+      if (obj && typeof obj.idx === 'number') out.push(obj);
+    } catch {}
+  }
+  out.sort((a, b) => b.idx - a.idx);
+  return out;
+}
+
+/** Streak helpers for guests */
+export function applyWinStreak(idx: number, sub: LocalSub): LocalSub {
+  const cur = sub.streak_current ?? 0;
+  const best = sub.streak_best ?? 0;
+  const last = sub.streak_last_idx ?? null;
+
+  const nextCur = last === idx - 1 ? cur + 1 : 1;
+  const nextBest = Math.max(best, nextCur);
+  const patched = { ...sub, streak_current: nextCur, streak_best: nextBest, streak_last_idx: idx };
+  setLocal(patched);
+  return patched;
+}
+
+export function applyLossStreak(idx: number, sub: LocalSub): LocalSub {
+  const patched = { ...sub, streak_current: 0, streak_last_idx: idx };
+  setLocal(patched);
+  return patched;
 }

@@ -18,7 +18,7 @@ export default function LeaderboardDialog({
   onClose: () => void;
   tz: string;
 }) {
-  const [tab, setTab] = useState<'week' | 'all'>('week');
+  const [tab, setTab] = useState<'week' | 'all' | 'streak'>('week');
 
   const [weeks, setWeeks] = useState<Week[]>([]);
   const [currentWeekId, setCurrentWeekId] = useState<number | null>(null);
@@ -66,7 +66,7 @@ export default function LeaderboardDialog({
           const j = await r.json();
           setTop(Array.isArray(j.top) ? j.top : []);
           setMe(Array.isArray(j.me) ? (j.me[0] ?? null) : j.me ?? null);
-        } else {
+        } else if (tab === 'all') {
           const r = await fetch(`/api/leaderboard/alltime`, {
             cache: 'no-store',
             headers: token ? { Authorization: `Bearer ${token}` } : undefined,
@@ -74,6 +74,22 @@ export default function LeaderboardDialog({
           const j = await r.json();
           setTop(Array.isArray(j.top) ? j.top : []);
           setMe(Array.isArray(j.me) ? (j.me[0] ?? null) : j.me ?? null);
+        } else {
+          // streaks
+          const r = await fetch(`/api/leaderboard/streak`, {
+            cache: 'no-store',
+            headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+          });
+          const j = await r.json();
+          // Map { rank, username, value, user_id? } -> Row
+          const mapRow = (o: any, i: number): Row => ({
+            user_id: String(o.user_id ?? `${o.username ?? 'anon'}-${o.rank ?? i + 1}`),
+            username: String(o.username ?? 'anon'),
+            points: Number(o.value ?? 0),
+            rank: Number(o.rank ?? i + 1),
+          });
+          setTop(Array.isArray(j.top50) ? j.top50.map(mapRow) : []);
+          setMe(j.me ? mapRow(j.me, 0) : null);
         }
       } finally {
         setLoading(false);
@@ -83,6 +99,7 @@ export default function LeaderboardDialog({
 
   const headerLabel = useMemo(() => {
     if (tab === 'all') return 'All time';
+    if (tab === 'streak') return 'Top best streaks';
     const wk = weeks.find((w) => w.id === (selectedWeekId ?? currentWeekId));
     if (!wk) return 'This week';
     const fmt = (d: string) =>
@@ -90,6 +107,8 @@ export default function LeaderboardDialog({
     const seq = wk.seq ? `Week ${wk.seq} • ` : '';
     return `${seq}${fmt(wk.start_date)} – ${fmt(wk.end_date)}`;
   }, [tab, weeks, selectedWeekId, currentWeekId]);
+
+  const valueHeader = tab === 'streak' ? 'Streak' : 'Pts';
 
   if (!open) return null;
 
@@ -123,6 +142,12 @@ export default function LeaderboardDialog({
             >
               All time
             </button>
+            <button
+              className={`px-3 py-1.5 rounded-md text-sm ${tab === 'streak' ? 'bg-black text-white' : 'hover:bg-black/5'}`}
+              onClick={() => setTab('streak')}
+            >
+              Streaks
+            </button>
           </div>
         </div>
 
@@ -153,7 +178,7 @@ export default function LeaderboardDialog({
             <div className="grid grid-cols-[3rem_1fr_4rem] bg-black/5 text-xs font-medium sticky top-0">
               <div className="px-2 py-2">#</div>
               <div className="px-2 py-2">Username</div>
-              <div className="px-2 py-2 text-right">Pts</div>
+              <div className="px-2 py-2 text-right">{valueHeader}</div>
             </div>
 
             <div className="max-h-80 overflow-auto">
@@ -162,15 +187,13 @@ export default function LeaderboardDialog({
               ) : top.length === 0 ? (
                 <div className="p-4 text-sm text-black/60">No data yet.</div>
               ) : (
-                top.map((r) => {
+                top.map((r, i) => {
                   const medal = r.rank === 1 ? '🥇' : r.rank === 2 ? '🥈' : r.rank === 3 ? '🥉' : null;
                   const isMe = me && r.user_id === me.user_id;
                   return (
                     <div
-                      key={r.user_id}
-                      className={`grid grid-cols-[3rem_1fr_4rem] border-t text-sm ${
-                        isMe ? 'bg-yellow-50/70' : 'bg-white'
-                      }`}
+                      key={r.user_id || `${r.username}-${i}`}
+                      className={`grid grid-cols-[3rem_1fr_4rem] border-t text-sm ${isMe ? 'bg-yellow-50/70' : 'bg-white'}`}
                     >
                       <div className="px-2 py-2">{medal ?? r.rank}</div>
                       <div className="px-2 py-2 flex items-center gap-2">

@@ -13,10 +13,8 @@ export default function AccountPage() {
   const fromAuth = params.get('src') === 'auth'; // only auto-redirect on auth callback
 
   const [email, setEmail] = useState('');
-  const [session, setSession] =
-    useState<Awaited<ReturnType<typeof supabase.auth.getSession>>['data']['session']>(null);
-  const [profile, setProfile] =
-    useState<{ email?: string; username?: string; onboarded?: boolean } | null>(null);
+  const [session, setSession] = useState<Awaited<ReturnType<typeof supabase.auth.getSession>>['data']['session']>(null);
+  const [profile, setProfile] = useState<{ email?: string; username?: string; onboarded?: boolean } | null>(null);
   const [username, setUsername] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
