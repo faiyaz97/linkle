@@ -1,6 +1,7 @@
 // src/components/Keyboard.tsx
 'use client';
 
+import { Delete } from 'lucide-react';
 import React from 'react';
 
 export type KeyState = 'idle' | 'miss' | 'present' | 'correct'; // kept for API compat, ignored
@@ -101,7 +102,7 @@ export default function Keyboard({
           className={wideKeyClass}
           aria-label="Backspace"
         >
-          ⌫
+        <Delete className="w-7 h-7 m-auto" strokeWidth={2} />
         </button>
       </div>
     </div>

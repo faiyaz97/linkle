@@ -4,7 +4,11 @@ import React from 'react';
 import Link from 'next/link';
 import { User, Settings, HelpCircle, Trophy } from 'lucide-react';
 
-type NavBarProps = { title?: string; onOpenLeaderboard?: () => void };
+type NavBarProps = { 
+  title?: string; 
+  onOpenLeaderboard?: () => void;
+  onOpenHelp?: () => void;
+};
 
 function IconButton(props: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   const { children, ...rest } = props;
@@ -18,7 +22,7 @@ function IconButton(props: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   );
 }
 
-export default function NavBar({ title = 'LINKLE', onOpenLeaderboard }: NavBarProps) {
+export default function NavBar({ title = 'LINKLE', onOpenLeaderboard, onOpenHelp }: NavBarProps) {
   return (
     <header className="w-full sticky top-0 z-40 border-b border-black bg-white">
       <div className="w-full h-16 flex items-center">
@@ -50,13 +54,14 @@ export default function NavBar({ title = 'LINKLE', onOpenLeaderboard }: NavBarPr
             <Settings className="w-7 h-7" strokeWidth={2} />
           </Link>
 
-          <Link
-            href="/help"
+          <IconButton
+            title="Help"
             aria-label="Help"
+            onClick={onOpenHelp}
             className="inline-flex items-center justify-center p-2 rounded-md text-black hover:bg-black/5 hover:opacity-80 transition-colors duration-150"
           >
             <HelpCircle className="w-7 h-7" strokeWidth={2} />
-          </Link>
+          </IconButton>
 
           <IconButton
             aria-label="Leaderboard"

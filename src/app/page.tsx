@@ -11,7 +11,9 @@ import { supabase } from '@/lib/supabase-browser';
 import { getLocal, setLocal, LocalSub, applyWinStreak, applyLossStreak } from '@/lib/local-game';
 import Strikes from '@/components/Strikes';
 import EndgameDialog from '@/components/EndgameDialog';
+import HelpDialog from '@/components/HelpDialog';
 
+// ---- types (unchanged) ----
 type Today = {
   idx: number;
   puzzle_date: string;
@@ -32,6 +34,7 @@ type GuessRespGuest =
 
 type LocalSubExt = LocalSub & { revealed_answer?: string };
 
+// ---- component ----
 export default function Home() {
   const [tz] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone);
   const [sessionToken, setSessionToken] = useState<string | null>(null);
@@ -48,12 +51,13 @@ export default function Home() {
   const [bumpTick, setBumpTick] = useState(0);
   const [celebrateTick, setCelebrateTick] = useState(0);
   const submitLock = useRef(false);
+
   const [lbOpen, setLbOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
 
   const [strikeAnimIndex, setStrikeAnimIndex] = useState<number | null>(null);
   const [strikeAnimKey, setStrikeAnimKey] = useState(0);
 
-  // End dialog
   const [endOpen, setEndOpen] = useState(false);
   const [endVariant, setEndVariant] = useState<'win' | 'loss'>('win');
   const [endStreak, setEndStreak] = useState<{ current: number; best: number } | null>(null);
@@ -72,18 +76,13 @@ export default function Home() {
     setTimeout(() => setEndOpen(true), 300);
   };
 
-  // helper to fetch streak for logged-in user (used on refresh)
   async function loadAuthStreak(): Promise<{ current: number; best: number } | null> {
-    const { data, error } = await supabase
-      .from('users')
-      .select('streak_current,streak_best')
-      .single();
+    const { data, error } = await supabase.from('users').select('streak_current,streak_best').single();
     if (error || !data) return null;
     return { current: data.streak_current ?? 0, best: data.streak_best ?? 0 };
-    // RLS must allow user to select own row.
   }
 
-  // load today + auto-open dialog on finished games (handles refresh)
+  // load today + auto-end dialog on refresh
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -109,8 +108,8 @@ export default function Home() {
               setGuess(ans);
               if (!endOpenedRef.current) {
                 endOpenedRef.current = true;
-                const streak = await loadAuthStreak();
-                openEnd('win', streak);
+                const st = await loadAuthStreak();
+                openEnd('win', st);
               }
             } else if (data.submission.lives_left === 0) {
               setStatus('lost');
@@ -118,8 +117,8 @@ export default function Home() {
               else { setReveal(''); setGuess(''); }
               if (!endOpenedRef.current) {
                 endOpenedRef.current = true;
-                const streak = await loadAuthStreak();
-                openEnd('loss', streak);
+                const st = await loadAuthStreak();
+                openEnd('loss', st);
               }
             } else {
               setStatus('playing'); setGuess(''); setReveal('');
@@ -138,12 +137,18 @@ export default function Home() {
               setStatus('won');
               const fin = local.guesses.at(-1) ?? '';
               setReveal(fin); setGuess(fin);
-              if (!endOpenedRef.current) { endOpenedRef.current = true; openEnd('win', { current: local.streak_current ?? 0, best: local.streak_best ?? 0 }); }
+              if (!endOpenedRef.current) {
+                endOpenedRef.current = true;
+                openEnd('win', { current: local.streak_current ?? 0, best: local.streak_best ?? 0 });
+              }
             } else if (local.lives_left === 0) {
               setStatus('lost');
               const ans = local.revealed_answer ?? '';
               setReveal(ans); setGuess(ans);
-              if (!endOpenedRef.current) { endOpenedRef.current = true; openEnd('loss', { current: local.streak_current ?? 0, best: local.streak_best ?? 0 }); }
+              if (!endOpenedRef.current) {
+                endOpenedRef.current = true;
+                openEnd('loss', { current: local.streak_current ?? 0, best: local.streak_best ?? 0 });
+              }
             } else {
               setStatus('playing'); setGuess(''); setReveal('');
             }
@@ -163,7 +168,7 @@ export default function Home() {
     return guesses.includes(norm);
   }
 
-  // AUTH submit
+  // submit (auth)
   const submitGuessAuth = useCallback(async () => {
     if (!today || status !== 'playing' || !guess.trim() || submitting || submitLock.current || !sessionToken) return;
 
@@ -207,7 +212,6 @@ export default function Home() {
         if (res.gameOver) {
           setStatus('lost');
           if (res.answer && typeof res.answer === 'string') { setReveal(res.answer); setGuess(res.answer); } else { setGuess(''); }
-          // load streak after loss for dialog
           const st = await loadAuthStreak();
           openEnd('loss', st);
         } else { setGuess(''); }
@@ -215,7 +219,7 @@ export default function Home() {
     } finally { setSubmitting(false); setTimeout(() => { submitLock.current = false; }, 0); }
   }, [today, status, guess, submitting, tz, sessionToken, wrongGuesses, guesses]);
 
-  // GUEST submit
+  // submit (guest)
   const submitGuessGuest = useCallback(async () => {
     if (!today || status !== 'playing' || !guess.trim() || submitting || submitLock.current || sessionToken) return;
 
@@ -258,7 +262,7 @@ export default function Home() {
 
   const submitGuess = sessionToken ? submitGuessAuth : submitGuessGuest;
 
-  // physical keyboard
+  // keyboard
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (status !== 'playing') return;
@@ -281,7 +285,10 @@ export default function Home() {
 
   return (
     <div className="min-h-screen flex flex-col">
-      <NavBar onOpenLeaderboard={() => setLbOpen(true)} />
+      <NavBar
+        onOpenLeaderboard={() => setLbOpen(true)}
+        onOpenHelp={() => setHelpOpen(true)}
+      />
 
       <main className="w-full flex-1 flex items-center">
         <div className="w-full">
@@ -314,14 +321,8 @@ export default function Home() {
       </div>
 
       <LeaderboardDialog open={lbOpen} onClose={() => setLbOpen(false)} tz={tz} />
-
-      <EndgameDialog
-        open={endOpen}
-        variant={endVariant}
-        streak={endStreak}
-        loggedIn={!!sessionToken}
-        onClose={() => setEndOpen(false)}
-      />
+      <HelpDialog open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <EndgameDialog open={endOpen} variant={endVariant} streak={endStreak} loggedIn={!!sessionToken} onClose={() => setEndOpen(false)} />
     </div>
   );
 }
